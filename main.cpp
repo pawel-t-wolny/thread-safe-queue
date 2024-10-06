@@ -11,13 +11,11 @@
 
 using namespace std;
 
-mutex cout_mutex;
-
 template <typename T> class Buffer {
 public:
   Buffer() : bounded(false) {}
 
-  Buffer(size_t bound) : bounded(true), bound(bound) {
+  Buffer(size_t bound) : bounded(true), max_size(bound) {
     if (bound == 0)
       throw invalid_argument("Bound should be greater than zero!");
     buffer.reserve(bound);
@@ -25,88 +23,72 @@ public:
 
   /**
    * @brief Pushes an element to the front of the buffer
-   *
-   * @param element The element to be pushed
-   * @return true - The element has been pushed successfully
-   * @return false - Pushing the element has failed
+   * 
+   * @param element - The element fo be pushed to the front of the buffer
    */
-  bool push_front(T element) {
-
+  void push_front(T element) {
     lock_guard<mutex> guard(buffer_lock);
     if (bounded && buffer.size() == max_size) {
-      return false;
+      throw runtime_error("Buffer is full!");
     }
     buffer.insert(buffer.begin(), element);
-    return true;
   }
 
   /**
    * @brief Pops an element from the end of the buffer
-   *
-   * @param element Reference to a placeholder where the popped element will be
-   * saved
-   * @return true - The element has been popped successfully
-   * @return false - Popping the element has failed
+   * 
+   * @return T - The element popped from the end of the buffer
    */
-  bool pop_back(T &element) {
+  T pop_back() {
     lock_guard<mutex> guard(buffer_lock);
     if (buffer.size() == 0) {
-      // Buffer empty
-      return false;
+      throw runtime_error("Buffer is empty!");
     }
-    element = buffer.back();
+    T element = buffer.back();
     buffer.pop_back();
-    return true;
+    return element;
   }
 
   /**
-   * @brief Read the n last elements from the buffer and append them to the
-   * provided read buffer
+   * @brief Read n elements from the buffer (without removing them from the buffer)
    *
-   * @param n Number of elements to be read from the buffer
-   * @param b Reference to a buffer where the read elements should be appended
-   * to
-   * @return true - The elements have been read successfully
-   * @return false - Reading has failed
+   * @return vector<T> - A vector containing the read elements
    */
-  bool read_n(size_t n, vector<T> &read_buffer) {
+  vector<T> read_n(size_t n) {
     lock_guard<mutex> guard(buffer_lock);
     if (n > buffer.size()) {
-      // Not enough elements to read
-      return false;
+      throw runtime_error("Not enough elements to read!");
     }
 
-    read_buffer.resize(read_buffer.size() + n);
+    vector<T> read_buffer;
+    read_buffer.reserve(n);
 
     for (int i = buffer.size() - n; i < buffer.size(); ++i) {
       read_buffer.push_back(buffer[i]);
     }
 
-    return true;
+    return read_buffer;
   }
 
   /**
-   * @brief Read all the elements from the buffer and append them to the
-   * provided read buffer.
+   * @brief Read all the elements from the buffer (without removing them from the buffer)
    *
-   * @param read_buffer Reference to a buffer where the read elements should be
-   * appended to
-   * @return true - The elements have been read successfully
-   * @return false - Reading has failed
+   * @return vector<T> - A vector containing the read elements
    */
-  bool read(vector<T> &read_buffer) {
+  vector<T> read_all() {
     lock_guard<mutex> guard(buffer_lock);
     if (buffer.empty()) {
-      return false;
+      throw runtime_error("Buffer is empty!");
     }
 
-    read_buffer.resize(read_buffer.size() + buffer.size());
+    vector<T> read_buffer;
+    read_buffer.reserve(buffer.size());
 
     for (int i = 0; i < buffer.size(); ++i) {
       read_buffer.push_back(buffer[i]);
     }
 
-    return true;
+    return read_buffer;
   }
 
   /**
@@ -116,31 +98,47 @@ public:
    */
   size_t get_bound() {
     lock_guard<mutex> guard(buffer_lock);
-    return bound;
+    return max_size;
+  }
+  
+  /**
+   * @brief Check if the buffer is set to be bounded
+   * 
+   * @return bool - true if the buffer is bounded and false otherwise
+   */
+  bool is_bounded() {
+    lock_guard<mutex> guard(buffer_lock);
+    return bounded;
   }
 
   /**
-   * @brief Set the upper bound of the buffer
+   * @brief Set the upper bound of the buffer. In case the new upper bound is smaller than the current size of the buffer, the excess elements are discarded.
    *
    * @param bound The new upper bound for the buffer
+   * 
    */
   void set_bound(size_t bound) {
     lock_guard<mutex> guard(buffer_lock);
-    if (bound >= buffer.size()) {
-      buffer.reserve(this->bound - bound);
+    if (!bounded) {
+      bounded = true;
+    }
+    if (bound >= buffer.capacity()) {
+      buffer.reserve(buffer.capacity() - bound);
     } else {
       buffer.resize(bound);
     }
-    return
+    max_size = bound;
   }
 
-  void print_buffer() {
+  /**
+   * @brief Remove the upper bound of the buffer
+   * 
+   */
+  void remove_bound() {
     lock_guard<mutex> guard(buffer_lock);
-    lock_guard<mutex> guard(cout_mutex);
-    for (size_t i = 0; i < buffer.size(); ++i) {
-      std::cout << buffer[i] << " "; // Access elements using index
+    if (bounded) {
+      bounded = false;
     }
-    std::cout << std::endl; // Print a newline at the end
   }
 
 private:
@@ -152,90 +150,153 @@ private:
 
 class Logger {
 public:
-  void write(string log) { buffer.push_front(log); }
+  enum LogLevel {
+    INFO,
+    ERROR,
+  };
+
+  void write(string log, LogLevel level) { 
+    time_t now = time(0);
+    tm* t = localtime(&now);
+
+    char time_buffer[80];
+    strftime(time_buffer, sizeof(time_buffer), "%Y-%m-%d %H:%M:%S", t);
+    string date_time(time_buffer);
+
+    //Prepend the log with the current date and time
+    log = log_level_to_str(level) + " [" + date_time + "] " + log;
+
+    buffer.push_front(log); 
+  }
 
   string read_one() {
-    vector<string> read_buffer;
-    buffer.read_n(1, read_buffer);
-
+    vector<string> read_buffer = buffer.read_n(1);
     return read_buffer.at(0);
   }
 
   vector<string> read_n(size_t n) {
-    vector<string> read_buffer;
-    buffer.read_n(n, read_buffer);
-
+    vector<string> read_buffer = buffer.read_n(n);
     return read_buffer;
   }
 
   vector<string> read_all() {
-    vector<string> read_buffer;
-    buffer.read(read_buffer);
-
+    vector<string> read_buffer = buffer.read_all();
     return read_buffer;
   }
 
-  void print_logs() { buffer.print_buffer(); }
-
 private:
   Buffer<string> buffer;
+
+  string log_level_to_str(LogLevel level) {
+    switch (level) {
+      case INFO: return "INFO";
+      case ERROR: return "ERROR";
+      default: return "UNKNOWN";
+    }  
+  }
 };
 
 class IntBuffer {
 public:
+  IntBuffer() {}
+
+  IntBuffer(size_t bound) : buffer(bound) {}
+
+  // The logger that all the operations performed on the buffer will be logged to
   Logger logger;
 
-  void push_front(int element) { buffer.push_front(element); }
+  void push_front(int element) { 
+    try {
+      buffer.push_front(element);
+    } catch (const runtime_error& e) {
+      string log = "Failed to push " + to_string(element) + " to the front of the buffer. Reason: " + string(e.what());
+      logger.write(log, Logger::LogLevel::ERROR);
+      throw e;
+    }
+    string log = "Pushed " + to_string(element) + " to the front of the buffer.";
+    logger.write(log, Logger::LogLevel::INFO);
+  }
+
+  int pop_back() {
+    int element;
+    try {
+      element = buffer.pop_back();
+    } catch (const runtime_error& e) {
+      string log = "Failed to pop from the back of the buffer. Reason: " + string(e.what());
+      logger.write(log, Logger::LogLevel::ERROR);
+      throw e;
+    }
+    string log = "Popped " + to_string(element) + " from the back of the buffer.";
+    logger.write(log, Logger::LogLevel::INFO);
+    return element;
+  }
+
+  void set_bound(size_t bound) {
+    buffer.set_bound(bound);
+    string log = "Set the bound of the buffer to " + to_string(bound) + ".";
+    logger.write(log, Logger::LogLevel::INFO);
+  }
+
+  void remove_bound() {
+    buffer.remove_bound();
+    string log = "Removed bound of the buffer.";
+    logger.write(log, Logger::LogLevel::INFO);
+  }
 
 private:
   Buffer<int> buffer;
 };
 
-void performBufferOperationsOne(Buffer<int> &buffer) {
-  // buffer.push_front(10);
-  // this_thread::sleep_for(chrono::seconds(2));
-  // int element;
-  // buffer.pop_back(element);
-  // cout_mutex.lock();
-  // cout << "Thread 1: " << element << "\n";
-  // cout_mutex.unlock();
-  buffer.push_front(1);
-  buffer.push_front(2);
-  buffer.push_front(3);
-  buffer.push_front(4);
+void performPushOperations(IntBuffer &buffer, int start, int count) {
+  for (int i = start; i < start + count; ++i) {
+    bool success = false;
+    while (!success) {
+      try {
+        buffer.push_front(i);
+        success = true;
+      } catch (const runtime_error& e) {
+        this_thread::sleep_for(chrono::milliseconds(100));
+      }
+    }
+  }
 }
 
-void performBufferOperationsTwo(Buffer<int> &buffer) {
-  // this_thread::sleep_for(chrono::seconds(1));
-  // int element;
-  // buffer.pop_back(element);
-  // buffer.push_front(20);
-  // cout_mutex.lock();
-  // cout << "Thread 2: " << element << "\n";
-  // cout_mutex.unlock();
-  buffer.push_front(5);
-  buffer.push_front(6);
-  buffer.push_front(7);
-  buffer.push_front(8);
+void performPopOperations(IntBuffer &buffer, int count) {
+  for (int i = 0; i < count; ++i) {
+    bool success = false;
+    while (!success) {
+      try {
+        buffer.pop_back();
+        success = true;
+      } catch (const runtime_error& e) {
+        this_thread::sleep_for(chrono::milliseconds(100));
+      }
+    }
+  }
 }
 
 int main(int argc, char *argv[]) {
-  Buffer<int> buffer;
+  IntBuffer buffer(10);
 
-  thread t1(performBufferOperationsOne, ref(buffer));
-  thread t2(performBufferOperationsTwo, ref(buffer));
+  vector<thread> threads;
 
-  t1.join();
-  t2.join();
-
-  vector<int> read_buffer;
-
-  buffer.read_n(4, ref(read_buffer));
-
-  for (size_t i = 0; i < read_buffer.size(); ++i) {
-    std::cout << read_buffer[i] << " "; // Access elements using index
+  for (int i = 0; i < 5; ++i) {
+    threads.push_back(thread(performPushOperations, ref(buffer), i * 5, 5));
   }
-  std::cout << std::endl; // Print a newline at the end
+
+  for (int i = 0; i < 3; ++i) {
+    threads.push_back(thread(performPopOperations, ref(buffer), 5));
+  }
+
+  for (thread &t : threads) {
+    t.join();
+  }
+
+  vector<string> read_buffer = buffer.logger.read_all();
+  for (size_t i = 0; i < read_buffer.size(); ++i) {
+    cout << read_buffer[i] << "\n";
+  }
+  cout << endl;
 
   return 0;
 }
