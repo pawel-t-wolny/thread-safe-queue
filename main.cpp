@@ -23,20 +23,23 @@ public:
 
   /**
    * @brief Pushes an element to the front of the buffer
-   * 
+   *
    * @param element - The element fo be pushed to the front of the buffer
+   *
+   * @return size_t - The new size of the buffer
    */
-  void push_front(T element) {
+  size_t push_front(T element) {
     lock_guard<mutex> guard(buffer_lock);
     if (bounded && buffer.size() == max_size) {
       throw runtime_error("Buffer is full!");
     }
     buffer.insert(buffer.begin(), element);
+    return buffer.size();
   }
 
   /**
    * @brief Pops an element from the end of the buffer
-   * 
+   *
    * @return T - The element popped from the end of the buffer
    */
   T pop_back() {
@@ -50,7 +53,8 @@ public:
   }
 
   /**
-   * @brief Read n elements from the buffer (without removing them from the buffer)
+   * @brief Read n elements from the buffer (without removing them from the
+   * buffer)
    *
    * @return vector<T> - A vector containing the read elements
    */
@@ -71,7 +75,8 @@ public:
   }
 
   /**
-   * @brief Read all the elements from the buffer (without removing them from the buffer)
+   * @brief Read all the elements from the buffer (without removing them from
+   * the buffer)
    *
    * @return vector<T> - A vector containing the read elements
    */
@@ -100,10 +105,10 @@ public:
     lock_guard<mutex> guard(buffer_lock);
     return max_size;
   }
-  
+
   /**
    * @brief Check if the buffer is set to be bounded
-   * 
+   *
    * @return bool - true if the buffer is bounded and false otherwise
    */
   bool is_bounded() {
@@ -112,10 +117,12 @@ public:
   }
 
   /**
-   * @brief Set the upper bound of the buffer. In case the new upper bound is smaller than the current size of the buffer, the excess elements are discarded.
+   * @brief Set the upper bound of the buffer. In case the new upper bound is
+   * smaller than the current size of the buffer, the excess elements are
+   * discarded.
    *
    * @param bound The new upper bound for the buffer
-   * 
+   *
    */
   void set_bound(size_t bound) {
     lock_guard<mutex> guard(buffer_lock);
@@ -132,7 +139,7 @@ public:
 
   /**
    * @brief Remove the upper bound of the buffer
-   * 
+   *
    */
   void remove_bound() {
     lock_guard<mutex> guard(buffer_lock);
@@ -155,44 +162,65 @@ public:
     ERROR,
   };
 
-  void write(string log, LogLevel level) { 
+  struct LogEntry {
+    string message;
+    chrono::time_point<chrono::system_clock> timestamp;
+
+    bool operator<(const LogEntry &other) const {
+      return timestamp > other.timestamp;
+    }
+  };
+
+  void write(string message, LogLevel level) {
+    auto precise_now = chrono::system_clock::now();
+
     time_t now = time(0);
-    tm* t = localtime(&now);
+    tm *t = localtime(&now);
 
     char time_buffer[80];
     strftime(time_buffer, sizeof(time_buffer), "%Y-%m-%d %H:%M:%S", t);
     string date_time(time_buffer);
 
-    //Prepend the log with the current date and time
-    log = log_level_to_str(level) + " [" + date_time + "] " + log;
+    // Prepend the log with the current date and time
+    message = log_level_to_str(level) + " [" + date_time + " " +
+              to_string(precise_now.time_since_epoch().count()) + "] " +
+              message;
+    LogEntry log = LogEntry{message, precise_now};
 
-    buffer.push_front(log); 
-  }
-
-  string read_one() {
-    vector<string> read_buffer = buffer.read_n(1);
-    return read_buffer.at(0);
+    buffer.push_front(log);
   }
 
   vector<string> read_n(size_t n) {
-    vector<string> read_buffer = buffer.read_n(n);
-    return read_buffer;
+    vector<LogEntry> read_buffer = buffer.read_n(n);
+    return log_level_to_sorted_string(read_buffer);
   }
 
   vector<string> read_all() {
-    vector<string> read_buffer = buffer.read_all();
-    return read_buffer;
+    vector<LogEntry> read_buffer = buffer.read_all();
+    return log_level_to_sorted_string(read_buffer);
   }
 
 private:
-  Buffer<string> buffer;
+  Buffer<LogEntry> buffer;
+
+  vector<string> log_level_to_sorted_string(vector<LogEntry> logs) {
+    vector<string> return_buffer;
+    sort(logs.begin(), logs.end());
+    for (int i = 0; i < logs.size(); i++) {
+      return_buffer.push_back(logs[i].message);
+    }
+    return return_buffer;
+  }
 
   string log_level_to_str(LogLevel level) {
     switch (level) {
-      case INFO: return "INFO";
-      case ERROR: return "ERROR";
-      default: return "UNKNOWN";
-    }  
+    case INFO:
+      return "INFO";
+    case ERROR:
+      return "ERROR";
+    default:
+      return "UNKNOWN";
+    }
   }
 };
 
@@ -202,42 +230,53 @@ public:
 
   IntBuffer(size_t bound) : buffer(bound) {}
 
-  // The logger that all the operations performed on the buffer will be logged to
+  // The logger that all the operations performed on the buffer will be logged
+  // to
   Logger logger;
 
-  void push_front(int element) { 
+  void push_front(int element) {
+    std::lock_guard<std::mutex> lock(int_buffer_lock);
+    size_t current_size;
     try {
-      buffer.push_front(element);
-    } catch (const runtime_error& e) {
-      string log = "Failed to push " + to_string(element) + " to the front of the buffer. Reason: " + string(e.what());
+      current_size = buffer.push_front(element);
+    } catch (const runtime_error &e) {
+      string log = "Failed to push " + to_string(element) +
+                   " to the front of the buffer. Reason: " + string(e.what());
       logger.write(log, Logger::LogLevel::ERROR);
       throw e;
     }
-    string log = "Pushed " + to_string(element) + " to the front of the buffer.";
+    string log =
+        "Pushed " + to_string(element) +
+        " to the front of the buffer. Buffer size: " + to_string(current_size);
     logger.write(log, Logger::LogLevel::INFO);
   }
 
   int pop_back() {
+    std::lock_guard<std::mutex> lock(int_buffer_lock);
     int element;
     try {
       element = buffer.pop_back();
-    } catch (const runtime_error& e) {
-      string log = "Failed to pop from the back of the buffer. Reason: " + string(e.what());
+    } catch (const runtime_error &e) {
+      string log = "Failed to pop from the back of the buffer. Reason: " +
+                   string(e.what());
       logger.write(log, Logger::LogLevel::ERROR);
       throw e;
     }
-    string log = "Popped " + to_string(element) + " from the back of the buffer.";
+    string log =
+        "Popped " + to_string(element) + " from the back of the buffer.";
     logger.write(log, Logger::LogLevel::INFO);
     return element;
   }
 
   void set_bound(size_t bound) {
+    std::lock_guard<std::mutex> lock(int_buffer_lock);
     buffer.set_bound(bound);
     string log = "Set the bound of the buffer to " + to_string(bound) + ".";
     logger.write(log, Logger::LogLevel::INFO);
   }
 
   void remove_bound() {
+    std::lock_guard<std::mutex> lock(int_buffer_lock);
     buffer.remove_bound();
     string log = "Removed bound of the buffer.";
     logger.write(log, Logger::LogLevel::INFO);
@@ -245,6 +284,7 @@ public:
 
 private:
   Buffer<int> buffer;
+  mutex int_buffer_lock;
 };
 
 void performPushOperations(IntBuffer &buffer, int start, int count) {
@@ -254,7 +294,7 @@ void performPushOperations(IntBuffer &buffer, int start, int count) {
       try {
         buffer.push_front(i);
         success = true;
-      } catch (const runtime_error& e) {
+      } catch (const runtime_error &e) {
         this_thread::sleep_for(chrono::milliseconds(100));
       }
     }
@@ -268,7 +308,7 @@ void performPopOperations(IntBuffer &buffer, int count) {
       try {
         buffer.pop_back();
         success = true;
-      } catch (const runtime_error& e) {
+      } catch (const runtime_error &e) {
         this_thread::sleep_for(chrono::milliseconds(100));
       }
     }
